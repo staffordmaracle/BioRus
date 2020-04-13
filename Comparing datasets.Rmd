@@ -1,0 +1,79 @@
+---
+title: "Comparing datasets"
+author: "Katy Waters"
+date: "07/04/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r loading libraries}
+library(readr)
+library(ape)
+library(ggtree)
+library(vegan)
+library(reshape2)
+library(ggplot2)
+library(seqinr)
+```
+
+#Load data
+BKPN metazoa pullout align dataset uploaded from Lim et al. (2016). Contains final aligned COI sequence set comprising the combined Bedok and Pandan datasets. Dataset was edited to have columns containing Reservoir ('BK' = Bedok, 'PN' = Pandan) and Site. 
+
+```{r bkpn.df factor}
+bkpn <- read.fasta("BKPN_metazoa_pullout_align.fa")
+bkpn.col <- lapply(bkpn, function(x){
+  paste(toupper(as.character(x)),
+                        collapse="")})
+bkpn.df <- data.frame("ID"=names(bkpn.col), 
+                      "Seq"=unlist(bkpn.col),
+                      stringsAsFactors=F)
+id.header <- gsub("(\\w)_\\d_(.*)", "\\1", bkpn.df$ID)
+bkpn.df$Reservoir <- gsub("(..)(\\d)(..)(\\d).*", "\\1", id.header)
+bkpn.df$Site <- gsub("(..)(\\d)(..)(\\d)", "\\1\\2", id.header)
+```
+
+#Site Counts
+Dataframe is changed into sample sites as columns, sequences as rows. Using Bray-Curtis dissimilarity to calculate abundance inferred from the number of sequence reads. Neighbor-joining tree clusters samples based on similarity of metazoan sequence reads. 
+
+```{r site.counts}
+site.counts <- bkpn.df %>% 
++   dcast(Seq ~ Site)
+t.site.counts<-as.data.frame(t(site.counts))
+
+bray.dist <- vegdist(site.counts[,-1], method="bray", binary = F)
+braytree<-nj(bray.dist)
+ggtree(bray.dist,layout="rectangular") %<+% bkpn.df + geom_tiplab(aes(colour=bkpn.df$Site))+theme(legend.position="right")
+```
+
+#NMDS
+Non-Metric Multidimensional Scaling (NMDS) visualizes similairty and differences among samples between reservoirs. 
+
+```{r NMDS}
+NMDSdat <- metaMDS(bray.dist, k=2, trymax=100)
+PDat <- data.frame(NMDS1=NMDSdat$points[,1],
+                   NMDS2=NMDSdat$points[,2],
+                   Reservoir=bkpn.df$Reservoir))
+```
+
+#Bedok Reservoir
+Separating the dataset to only samples from the Bedok reservoir and calculating the Bray-Curtis dissimilarity for abundance information. 
+
+```{r BK Reservoir}
+bk.df<-filter(bkpn.df,Reservoir=='BK')
+Bk.site.counts <- bk.df %>% 
+  dcast(Seq ~ Site)
+BK.bray.dist <- vegdist(Bk.site.counts[,-1], method="bray", binary = F)
+```
+
+#Pedan Reservoir
+Separing the dataset to only samples from the Pedan reservoir and calculating the Bray-Curtis dissimilarity for abundance information.
+
+```{r PN Reservoir}
+pn.df<-filter(bkpn.df,Reservoir=='PN')
+Pn.site.counts <- pn.df %>% 
+  dcast(Seq ~ Site)
+PN.bray.dist <- vegdist(Pn.site.counts[,-1], method="bray", binary = F)
+```

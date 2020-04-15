@@ -1,0 +1,251 @@
+---
+title: "BIOL 432"
+author: "Shannon Edie"
+date: "April 13, 2020"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r read.data}
+
+setwd("C:/Users/Shannon/Documents/BIOl 432")
+# Read in FASTA file
+library(seqinr)
+bkpn <- read.fasta("C:/Users/Shannon/Documents/BIOL 432/data/BKPN_metazoa_pullout_align.fa")
+
+# The FASTA data format includes a list where each element is a data frame of all of the
+# individual nucleotides. Let's collapse that so our data format is a list where each
+# element is a single upper-case string sequence
+bkpn.col <- lapply(bkpn, function(x){
+  paste(toupper(as.character(x)), collapse="")})
+
+# Only 2155 of the sequences between the two sites are unique, so let's create a 
+# data frame including only the unique sequences (for purposes of BLASTing)
+bkpn.col.unique <- bkpn.col[!duplicated(bkpn.col)]
+
+```
+
+```{r create.df}
+
+# Now I want to make a data frame that includes the sequence, the sequence ID,
+# and other useful factors like the reservoir and site number. Currently,
+# site number is coded in the ID for each FASTA sequence; I'll use RegEx to 
+# extract the reservoir and site number
+
+# Divide up into location
+bkpn.df <- data.frame("ID"=names(bkpn.col), 
+                      "Seq"=unlist(bkpn.col),
+                      stringsAsFactors=F)
+id.header <- gsub("(\\w)_\\d_(.*)", "\\1", bkpn.df$ID)
+bkpn.df$Reservoir <- gsub("(..)(\\d)(..)(\\d).*", "\\1", id.header)
+bkpn.df$Site <- gsub("(..)(\\d)(..)(\\d)", "\\1\\2", id.header)
+bkpn.df$Depth <- gsub("(...)(\\w{1})(..)", "\\2", id.header)
+bkpn.df$ID.header <- id.header
+
+# Let's save this data file so others can access it!
+write.csv(bkpn.df, "cleaned_metazoan_data_with_site_information.csv")
+
+
+```
+
+```{r site.counts}
+
+# Use the "count" function to get a counts table depending on whatever
+# variables you are interested in.
+# This will let us construct a counts dataset much like the one we worked
+# with in Week 8 for metagenomics
+library(dplyr)
+library(maditr)
+site.counts <- bkpn.df %>% 
+  dcast(Seq ~ ID.header)
+write.csv(site.counts, "site_counts.csv")
+
+# This is just a dataframe indicating the associated depth, site, and
+# reservoir for each site.counts
+colname.breakdown <- data.frame(Site=gsub("(..)(\\d)(..)(\\d)", "\\1\\2", 
+                                          colnames(site.counts)[-1]),
+                                  Reservoir=gsub("(..)(\\d)(..)(\\d).*", "\\1", 
+                                                 colnames(site.counts)[-1]),
+                                  Depth=gsub("(...)(\\w{1})(..)", "\\2", 
+                                             colnames(site.counts)[-1]),
+                                stringsAsFactors=F)
+colname.breakdown <- rbind(colname.breakdown, data.frame(Site=rep(0,82), 
+                                                         Reservoir=rep(0,82), 
+                                                         Depth=rep(0,82)))
+
+# Analyze the differences in samples by building a hierarchical cluster
+# of the sites based on the sample counts (labelled here as "site.counts").
+set.seed(13)
+library(vegan)
+bray.dist <- vegdist(t(site.counts[,-1]), method="bray", binary = F)
+bray.tree <- nj(bray.dist)
+library(ggtree)
+ggtree(bray.tree, layout="rectangular") %<+% colname.breakdown +
+  geom_tiplab(aes(colour=paste(colname.breakdown$Site)), cex=2) +
+  theme(legend.position="right")
+
+```
+
+```{r nmds}
+
+# Generate a counts table to work with, dividing based on the 
+# Reservoir, site, and depth. (note that site reflects which reservoir
+# each sample is coming from, which is why the code below just says site)
+site.counts.nmds <- bkpn.df %>% 
+  dcast(Seq ~  ID.header)
+euc.dist <- dist(t(site.counts.nmds[,-1]))
+
+# Do an NMDS
+NMDSdat <- metaMDS(euc.dist, k=2, trymax=100)
+PDat <- data.frame(NMDS1=NMDSdat$points[,1],
+                   NMDS2=NMDSdat$points[,2], 
+                   ID.header=colnames(site.counts)[-1])
+PDat$Reservoir <- gsub("(..)(\\d)(..)(\\d).*", "\\1", PDat$ID.header)
+PDat$Site <- gsub("(..)(\\d)(..)(\\d)", "\\1\\2", PDat$ID.header)
+PDat$Depth <- gsub("(...)(\\w{1})(..)", "\\2", PDat$ID.header)
+
+# Plot the results of the NMDS, coloring based on the reservoir, site, and depth
+library(ggplot2)
+library(gridExtra)
+nmds.reservoir <- qplot(x=NMDS1,y=NMDS2,col=Reservoir,alpha=I(0.6),data=PDat)+theme_bw() +
+  stat_ellipse(geom="polygon", alpha=0.2, aes(fill=coi.ms.tek$COI.cora), level=0.95)
+nmds.site <- qplot(x=NMDS1,y=NMDS2,col=Site,alpha=I(0.6),data=PDat)+theme_bw()
+nmds.depth <- qplot(x=NMDS1,y=NMDS2,col=Depth,alpha=I(0.6),data=PDat)+theme_bw()
+grid.arrange(nmds.reservoir, nmds.site, nmds.depth, nrow=2)
+
+```
+
+```{r align}
+
+# Couldn't figure out how to run enough BLASTs fast enough
+# So instead I will align the sequences and see how that goes
+
+# First, write our bkpn.col.unique dataset to a FASTA file, and then
+# read it in as a binary file
+library(ape)
+write.fasta(bkpn.col.unique, names=names(bkpn.col.unique), file.out="C:/Users/Shannon/Documents/BIOL 432/data/bkpn_unique.fa")
+bkpn.bin <- read.dna("C:/Users/Shannon/Documents/BIOL 432/data/bkpn_unique.fa", format="fasta")
+
+# Check the alignment (wow looks so good! neat!)
+#checkAlignment(bkpn.bin)
+
+# Build a distance matrix
+dist.mat <- as.matrix(dist.dna(bkpn.bin))
+
+# I considered looking at a heatmap of the distance matrix but there were
+# so many sequences this wasn't really plausible.
+library(reshape2)
+library(ggplot2)
+pdat <- reshape2:::melt.matrix(dist.mat)
+# ggplot(data=pdat, aes(x=Var1, y=Var2, fill=value)) +
+#   geom_tile()
+
+# Let's build a phylogeny!
+bkpn.tree <- nj(dist.mat)
+library(ggtree)
+ggtree(bkpn.tree)
+
+
+
+# Try using MUSCLE as well to build a phylogeny. It looks a bit different
+# than the other phylogeny. I like it so I'm going to work with this one.
+muscle.align <- muscle(bkpn.bin, quiet=F)
+dist.muscle <- dist.dna(muscle.align)
+#checkAlignment(muscle.align, what=1)
+muscle.tree <- nj(dist.muscle)
+muscle.tree$tip.label <- paste(1:2155, gsub("(\\w{6})_(\\d{1})_(\\w)_(\\d+)_(.*)", "\\1_\\2_\\3_\\4", muscle.tree$tip.label), sep="_")
+
+extra.dat <- data.frame("Sample"=gsub("(\\d+)_(\\w{3})(\\w)\\w*", "\\3", muscle.tree$tip.label))
+
+ggtree(muscle.tree) %<+% extra.dat +
+  geom_tiplab(cex=1, aes(colour=c(extra.dat$Sample, rep(0, 2153)))) +
+  theme(legend.position="right")
+  
+
+```
+
+```{r blast}
+
+# Try BLAST+
+cmd <- "blastn -db nr -query C:/Users/Shannon/Documents/BIOL\ 432/data/small.fa -remote -out C:/Users/Shannon/Documents/BIOL\ 432/small.out"
+system(cmd)
+
+# Of the sequences we have, let's look at how frequently each sequence
+# comes up in our dataset.
+# Of our sequences, 1602 only appear once. I'll leave them out of the
+# histogram
+hist(c(table(unlist(bkpn.col)))[c(table(unlist(bkpn.col)))>1], breaks=50,
+     main="Frequency of sequences that appear >1 times",
+     xlab="Frequency of sequence",
+     ylab="Number of sequences with associated frequency")
+
+head(rowSums(site.counts[,-1])[order(-rowSums(site.counts[,-1]))], 10)
+# Let's BLAST the top 10 most popular sequences
+blast.seqs <- site.counts$Seq[order(-rowSums(site.counts[,-1]))][1:10]
+
+library(annotate)
+res <- list()
+# I chose to run a loop instead of just running all the sequences in one 
+# command because my RStudio was prone to crashing so this way I didn't have
+# to start over completely every time
+for (i in c(1:10)) {
+  blast.results <- tryCatch(
+                   blastSequences(blast.seqs[i],
+                                  as='data.frame',
+                                  timeout=1000,
+                                  hitListSize=10),
+                   error=function(e){
+                     print(e)
+                   }
+  )
+  res[[i]] <- blast.results
+  save.image("C:/Users/Shannon/Documents/BIOL 432/data/blast_2.RData")
+}
+
+write.table(blast.seqs, "highest_hits.fa", row.names=F, quote=F)
+read.table()
+
+```
+
+```{bash }
+
+### What I tried with on Frontenac:
+
+#!/bin/bash
+
+module load nixpkgs/16.09
+module load gcc/7.3.0
+module load blast+/2.10.0
+
+while read first_line; read second_line; do
+        echo $first_line > short_2.fa
+        echo $second_line >> short_2.fa
+
+        name=$(echo "$first_line" | awk '{print substr($1, 2); }')
+        echo $name
+        # Limit to COI sequences, and run on the BLAST servers
+        blastn -db nr -query short_2.fa -remote -entrez_query coi -max_target_seqs 10 > blast_output/$name.out
+
+done < bkpn_unique.fa
+
+# I briefly tried downloading the barcode of life data, creating my own database,
+# and running BLAST on the Frontenac servers (instead of the NCBI servers)
+# but to no avail. Unfortunately, I could only download public COI data, and not
+# the entire barcode of life dataset.
+less iBOL_phase_6.50_COI.tsv | awk -F '\t' '{print ">"$15"\n"$31; }' | sed 's/ /_/g' > iBOL.fa
+
+# In the end, we did not use this code. We ended up running only the
+# R code since we only had ten sequences to process.
+
+# Interestingly, when the blastn line was included in a Bash script
+# and submitted to the workload manager,  it wouldn't run, but when
+# run on an allocated work node it would run.
+
+```
+
